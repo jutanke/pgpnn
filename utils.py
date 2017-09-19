@@ -4,6 +4,7 @@ from PIL import Image
 import numpy as np
 from os import listdir
 
+
 def plot_mats(mats, cols=5, cmap=plt.get_cmap('gray'), size=16):
     """
     plot a set of matrices close to each other
