@@ -177,12 +177,18 @@ class PredictiveGatingPyramid:
         modelname = self.modelname
         assert self.modelname is not None
         try:
-            self.U_np[stage_level] = np.load(modelname + "U" + str(stage_level) + ".npy")
-            self.V_np[stage_level] = np.load(modelname + "V" + str(stage_level) + ".npy")
-            self.W_np[stage_level] = np.load(modelname + "W" + str(stage_level) + ".npy")
-            self.b_U_np[stage_level] = np.load(modelname + "b_U" + str(stage_level) + ".npy")
-            self.b_V_np[stage_level] = np.load(modelname + "b_V" + str(stage_level) + ".npy")
-            self.b_W_np[stage_level] = np.load(modelname + "b_W" + str(stage_level) + ".npy")
+            self.U_np[stage_level] = np.load(
+                modelname + "U" + str(stage_level) + ".npy")
+            self.V_np[stage_level] = np.load(
+                modelname + "V" + str(stage_level) + ".npy")
+            self.W_np[stage_level] = np.load(
+                modelname + "W" + str(stage_level) + ".npy")
+            self.b_U_np[stage_level] = np.load(
+                modelname + "b_U" + str(stage_level) + ".npy")
+            self.b_V_np[stage_level] = np.load(
+                modelname + "b_V" + str(stage_level) + ".npy")
+            self.b_W_np[stage_level] = np.load(
+                modelname + "b_W" + str(stage_level) + ".npy")
             return True
         except FileNotFoundError:
             return False
@@ -203,8 +209,7 @@ class PredictiveGatingPyramid:
     
     def train(self, X, epochs=100, pre_epochs=100, print_debug=True,
              load_layers=None,
-             load_first_stage=False, force_pretrain_first_stage=False,
-             load_second_stage=True, force_train_second_stage=True,
+             load_stages=True, 
              learningRate=0.0001, save_results=True):
         """ trains the model
         
@@ -221,7 +226,7 @@ class PredictiveGatingPyramid:
         
         
         if load_layers is None:
-            load_layers = [False] * depth
+            load_layers = [load_stages] * depth
         else:
             assert len(load_layers) == depth, \
                 "loading layers count must equal depth of pyramid"
@@ -281,7 +286,7 @@ class PredictiveGatingPyramid:
             weights_are_pre_loaded = False
             if load_layers[layer]:
                 # we want to pre-load the layer
-                weights_are_pre_loaded = self.load_stage(layer + 1) 
+                weights_are_pre_loaded = self.load_stage(layer) 
             
             dim = Dim[layer]
             
@@ -358,6 +363,7 @@ class PredictiveGatingPyramid:
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # R U N  O P T I M I Z E R
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        cost_history = []
         with tf.Session() as sess:
             init = tf.global_variables_initializer()
             sess.run(init)
@@ -371,7 +377,8 @@ class PredictiveGatingPyramid:
                     batch = splitter.next_batch(ngram=4)
                     sess.run(optimizer, feed_dict={x: batch})
                 
-                cost_ = sess.run(cost, feed_dict={x: test_set}) / n 
+                cost_ = sess.run(cost, feed_dict={x: test_set}) / n
+                cost_history.append(cost_)
                 if print_debug:
                     print ("Training: Epoch: %03d/%03d cost: %.9f" %\
                                (epoch,epochs ,cost_) )
@@ -386,5 +393,10 @@ class PredictiveGatingPyramid:
                 self.b_U_np[layer] = np.array(b_U[layer].eval(sess))
                 self.b_V_np[layer] = np.array(b_V[layer].eval(sess))
                 self.b_W_np[layer] = np.array(b_W[layer].eval(sess))
-                
+        
+        if save_results:
+            for layer in range(0, depth):
+                self.save_stage(layer)
+            
+        return cost_history
         
