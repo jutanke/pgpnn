@@ -130,12 +130,14 @@ class PredictiveGatingPyramid:
     
     def __init__(self, 
                  depth=2, 
-                 numfilters=512, 
-                 numHidden=256,
+                 numfilters=[512, 512], 
+                 numHidden=[256, 256],
                  modelname=None,
                  normalize_data=True):
         assert depth > 0
         assert depth == 2, "Other depth than 2 not supported"
+        assert len(numfilters) == depth, "Number of filters must equal depth"
+        assert len(numHidden) == depth, "Number of hidden units must equal depth"
         self.depth = depth
         self.F = numfilters
         self.H = numHidden
@@ -145,76 +147,47 @@ class PredictiveGatingPyramid:
         self.is_first_layer_trained = False
         self.is_second_layer_trained = False
         
+        self.U_np = [None] * depth
+        self.V_np = [None] * depth
+        self.W_np = [None] * depth
+        self.b_U_np = [None] * depth
+        self.b_V_np = [None] * depth
+        self.b_W_np = [None] * depth
+
+    def load_stage(self, stage_level):
+        """ Tries to load the stage from file
         
-    def save_first_stage(self):
-        """ saves the model onto disk
+        returns True if stage was successfully loaded, otherwise: False
         """
         modelname = self.modelname
-        assert(self.is_trained)
-        assert modelname is not None
-        np.save(modelname + "U1", self.U1_np)
-        np.save(modelname + "V1", self.V1_np)
-        np.save(modelname + "W1", self.W1_np)
-        np.save(modelname + "b_U1", self.b_U1_np)
-        np.save(modelname + "b_V1", self.b_V1_np)
-        np.save(modelname + "b_W1", self.b_W1_np)
-        np.save(modelname + "b_U1_out", self.b_U1_out_np)
-        np.save(modelname + "b_V1_out", self.b_V1_out_np)
-        np.save(modelname + "b_W1_out", self.b_W1_out_np)
-    
-    def load_first_stage(self, modelname=None):
-        """ loads the first layer of the network
-        """
-        if modelname is None:
-            modelname = self.modelname
-        self.U1_np = np.load(modelname + "U1.npy")
-        self.V1_np = np.load(modelname + "V1.npy")
-        self.W1_np = np.load(modelname + "W1.npy")
-        self.b_U1_np = np.load(modelname + "b_U1.npy")
-        self.b_V1_np = np.load(modelname + "b_V1.npy")
-        self.b_W1_np = np.load(modelname + "b_W1.npy")
-        self.b_U1_out_np = np.load(modelname + "b_U1_out.npy")
-        self.b_V1_out_np = np.load(modelname + "b_V1_out.npy")
-        self.b_W1_out_np = np.load(modelname + "b_W1_out.npy")
-        self.is_first_layer_trained = True
-    
-    def save_second_stage(self):
-        """ saves the model onto disk
-        """
-        modelname = self.modelname
-        assert(self.is_trained)
-        assert modelname is not None
-        np.save(modelname + "U2", self.U2_np)
-        np.save(modelname + "V2", self.V2_np)
-        np.save(modelname + "W2", self.W2_np)
-        np.save(modelname + "b_U2", self.b_U2_np)
-        np.save(modelname + "b_V2", self.b_V2_np)
-        np.save(modelname + "b_W2", self.b_W2_np)
-    
-    def load_second_stage(self, modelname=None):
-        """ load second layer of the network
-        
-            returns True if the layers were successfully loaded,
-                otherwise False
-        """
-        if modelname is None:
-            modelname = self.modelname
-        assert modelname is not None
+        assert self.modelname is not None
         try:
-            self.U2_np = np.load(modelname + "U2.npy")
-            self.V2_np = np.load(modelname + "V2.npy")
-            self.W2_np = np.load(modelname + "W2.npy")
-            self.b_U2_np = np.load(modelname + "b_U2.npy")
-            self.b_V2_np = np.load(modelname + "b_V2.npy")
-            self.b_W2_np = np.load(modelname + "b_W2.npy")
-            self.is_second_layer_trained = True
+            self.U_np[stage_level] = np.load(modelname + "U" + str(stage_level) + ".npy")
+            self.V_np[stage_level] = np.load(modelname + "V" + str(stage_level) + ".npy")
+            self.W_np[stage_level] = np.load(modelname + "W" + str(stage_level) + ".npy")
+            self.b_U_np[stage_level] = np.load(modelname + "b_U" + str(stage_level) + ".npy")
+            self.b_V_np[stage_level] = np.load(modelname + "b_V" + str(stage_level) + ".npy")
+            self.b_W_np[stage_level] = np.load(modelname + "b_W" + str(stage_level) + ".npy")
             return True
         except FileNotFoundError:
-            self.is_second_layer_trained = False
             return False
+    
+    def save_stage(self, stage_level):
+        """ Saves the stage to file
+        """
+        modelname = self.modelname
+        assert(self.is_trained)
+        assert modelname is not None
+        np.save(modelname + "U" + str(stage_level), self.U_np[stage_level])
+        np.save(modelname + "V" + str(stage_level), self.V_np[stage_level])
+        np.save(modelname + "W" + str(stage_level), self.W_np[stage_level])
+        np.save(modelname + "b_U" + str(stage_level), self.b_U_np[stage_level])
+        np.save(modelname + "b_V" + str(stage_level), self.b_V_np[stage_level])
+        np.save(modelname + "b_W" + str(stage_level), self.b_W_np[stage_level])
     
     
     def train(self, X, epochs=100, pre_epochs=100, print_debug=True,
+             load_layers=None,
              load_first_stage=False, force_pretrain_first_stage=False,
              load_second_stage=True, force_train_second_stage=True,
              learningRate=0.0001, save_results=True):
@@ -229,6 +202,13 @@ class PredictiveGatingPyramid:
                 instead
         """
         self.is_trained = True
+        depth = self.depth
+        
+        
+        if load_layers is None:
+            load_layers = [False] * depth
+        else:
+            assert len(load_layers) == depth, "loading layers count must equal depth of pyramid"
         
         X = X.astype('float32')  # hopefully we don't run OOMem here..
         
@@ -244,6 +224,94 @@ class PredictiveGatingPyramid:
         dim = splitter.get_dimension()
         numpy_rng = np.random.RandomState(1)
         
+        
+        U = [None] * depth
+        V = [None] * depth
+        W = [None] * depth
+        b_U = [None] * depth
+        b_V = [None] * depth
+        b_W = [None] * depth
+        
+        m = [None] * int((depth * (depth + 1)) / 2)  # as the pyramid.. 1 + 2 + ...
+        
+        for layer in range(0, depth):
+            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            # T R A I N  L A Y E R
+            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            if print_debug:
+                print("[TRAIN LAYER " + str(layer + 1) + "]")
+            
+            weights_are_pre_loaded = False
+            if load_layers[layer]:
+                # we want to pre-load the layer
+                weights_are_pre_loaded = self.load_stage(layer) 
+            
+            if weights_are_pre_loaded:
+                U[layer] = tf.Variable(self.U_np[layer])
+                V[layer] = tf.Variable(self.V_np[layer])
+                W[layer] = tf.Variable(self.W_np[layer])
+                b_U[layer] = tf.Variable(self.b_U_np[layer])
+                b_V[layer] = tf.Variable(self.b_V_np[layer])
+                b_W[layer] = tf.Variable(self.b_W_np[layer])
+                if print_debug:
+                    print("\tpre-loading weights for Layer " + str(layer))
+            else:
+                # randomly initialize the weights
+                U[layer] = tf.Variable(tf.random_normal(shape=(dim, F[layer])) * 0.01)
+                V[layer] = tf.Variable(tf.random_normal(shape=(dim, F[layer])) * 0.01)
+                W[layer] = tf.Variable(
+                    numpy_rng.uniform(low=-0.01, high=+0.01, 
+                                      size=( F[layer], H[layer])).astype('float32'))
+                b_U[layer] = tf.Variable(np.zeros(F[layer], dtype='float32'))
+                b_V[layer] = tf.Variable(np.zeros(F[layer], dtype='float32'))
+                b_W[layer] = tf.Variable(np.zeros(H[layer], dtype='float32'))
+                if print_debug:
+                    print("\tcould not preload weights for Layer " + str(layer))
+            
+            # m = sigmoid ( W . Ux1 * Vx2 )
+            num_hidden_nodes = depth - layer + 1
+            for i in range(num_hidden_nodes):
+                pass
+                
+                
+        # inputs
+        
+        x = tf.placeholder(tf.float32, [None, dim, layer + 1])
+        
+        
+        with tf.Session() as sess:
+            init = tf.global_variables_initializer()
+            sess.run(init)
+
+            test_set = splitter.get_test(ngram=3)
+            #X_ = test_set[:,0,:]
+            #Y_ = test_set[:,1,:]
+            #Z_ = test_set[:,2,:]
+            #n = test_set.shape[0]
+            #for epoch in range(epochs):
+            #    while splitter.is_same_batch_run():
+            #        batch = splitter.next_batch(ngram=3)
+            #        batch_xs = batch[:,0,:]
+            #        batch_ys = batch[:,1,:]
+            #        batch_zs = batch[:,2,:]
+            #        sess.run(optimizer_2, feed_dict={x: batch_xs, y: batch_ys, z: batch_zs})
+            #        sess.run(normalize_U2)
+            #        sess.run(normalize_V2)
+
+            #    cost_ = sess.run(cost_2, feed_dict={x: X_, y: Y_, z: Z_}) / n
+            #    if print_debug:
+            #        print ("Training: Epoch: %03d/%03d cost: %.9f" %\
+            #                   (epoch,epochs ,cost_) )
+        
+        
+        #x = tf.placeholder(tf.float32, [None, dim])
+        #y = tf.placeholder(tf.float32, [None, dim])
+        #z = tf.placeholder(tf.float32, [None, dim])
+        
+        
+            
+        
+        return
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # first layer
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
