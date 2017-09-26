@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow as tf
+from time import time
 
 # this function is 'borrowed' from keras
 def random_binomial(shape, p=0.0, dtype=None, seed=None):
@@ -159,8 +160,6 @@ class PredictiveGatingPyramid:
         self.is_trained = False
         self.normalize_data = normalize_data
         self.modelname = modelname
-        self.is_first_layer_trained = False
-        self.is_second_layer_trained = False
         
         self.U_np = [None] * depth
         self.V_np = [None] * depth
@@ -168,6 +167,7 @@ class PredictiveGatingPyramid:
         self.b_U_np = [None] * depth
         self.b_V_np = [None] * depth
         self.b_W_np = [None] * depth
+        
 
     def load_stage(self, stage_level):
         """ Tries to load the stage from file
@@ -206,46 +206,38 @@ class PredictiveGatingPyramid:
         np.save(modelname + "b_V" + str(stage_level), self.b_V_np[stage_level])
         np.save(modelname + "b_W" + str(stage_level), self.b_W_np[stage_level])
     
-    
-    def train(self, X, epochs=100, pre_epochs=100, print_debug=True,
-             load_layers=None,
-             load_stages=True, 
-             learningRate=0.0001, save_results=True):
-        """ trains the model
-        
-            X: training data: must be organized as follows:
-                Number_of_videos, video_length, H, W
-            epochs: number of epochs to run for final training
-            pre_epochs: number of epochs for training initial layer
-            load_first_stage: if True, then the first stage will not
-                be trained separatly but will be loaded from file
-                instead
+    def predict(self, X, Y, Z, locx=0, locy=1, locz=2, print_debug=True):
+        """ predicts the 4th frame given x,y,yz
         """
-        self.is_trained = True
-        depth = self.depth
+        assert self.is_trained, 'network must be trained before prediction'
+        dim = self.data_dimension
         
-        
-        if load_layers is None:
-            load_layers = [load_stages] * depth
-        else:
-            assert len(load_layers) == depth, \
-                "loading layers count must equal depth of pyramid"
-        
-        X = X.astype('float32')  # hopefully we don't run OOMem here..
-        
+        X = X.astype('float32')
+        Y = Y.astype('float32')
+        Z = Z.astype('float32')
         if self.normalize_data:
-            X -= X.mean(0)[None, :]
-            X /= X.std(0)[None, :] + X.std() * 0.1
-
-        input_nbr = depth + 2
-        splitter = ImageSplitter(X, n=input_nbr)
-
-        F = self.F
-        H = self.H
-        lr = learningRate
-        dim = splitter.get_dimension()
-        numpy_rng = np.random.RandomState(1)
+            mean = self.data_mean
+            std = self.data_std
+            X -= mean[0,locx]
+            X /= std[0,locx]
+            Y -= mean[0,locy]
+            Y /= std[0,locy]
+            Z -= mean[0,locz]
+            Z /= std[0,locz]
         
+        h, w = X.shape
+        _x = np.array([X,Y,Z,X])  # last x is just a 'dummy'
+        _x = np.array([_x.reshape(4, h*w), _x.reshape(4, h*w)])
+        
+        print("_x", _x.shape)
+        
+        depth = self.depth
+        input_nbr = depth + 2
+        dim = self.data_dimension
+        F, H = self.F, self.H
+        x = tf.placeholder(tf.float32, [2, input_nbr, dim])
+        
+        # ----
         Dim = [dim]
         for i in range(1, depth):
             Dim.append(H[i-1])
@@ -256,29 +248,35 @@ class PredictiveGatingPyramid:
         b_U = [None] * depth
         b_V = [None] * depth
         b_W = [None] * depth
-        
-        #M = [None] * int((depth * (depth + 1)) / 2)  # as the pyramid.. 1 + 2 + ...
         M = []
         for layer in range(1, depth + 1):
             elems_per_layer = depth - layer + 1
             M.append([None] * elems_per_layer)
         assert len(M[-1]) == 1, \
             'the last layer of the pyramid most contain only 1 element'
+        
+        load_layers = [True] * depth
+        
+        oz = self.build_network(x, U, V, W, b_U, b_V, b_W, M, Dim,
+                           print_debug, load_layers, depth)
+        
+        with tf.Session() as sess:
+            init = tf.global_variables_initializer()
+            sess.run(init)
+            result = sess.run(oz, feed_dict={x: _x})
+            
+            return np.array(result)
     
-        # true batchsize is a combination of batchsize (aka: number of videos) and
-        # the ngram (number of frames per training set) and the total number of
-        # frames in the respective video
-        true_batchsize = splitter.get_batch_size()
-        
-        
-        # inputs
-        
-        #x = tf.placeholder(tf.float32, [true_batchsize, input_nbr, dim])
-        x = tf.placeholder(tf.float32, [None, input_nbr, dim])
-        
+    
+    
+    def build_network(self, x, U, V, W, b_U, b_V, b_W, M, Dim, 
+                      print_debug, load_layers, depth):
+        """ build the whole network
+        """
+        input_nbr = depth + 2
         for layer in range(0, depth):
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            # T R A I N  L A Y E R
+            # B U I L D  L A Y E R S
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             if print_debug:
                 print("[CONSTRUCT LAYER " + str(layer + 1) + "]")
@@ -316,7 +314,6 @@ class PredictiveGatingPyramid:
                     print("\tcould not preload weights for Layer " +\
                           str(layer + 1))
             
-            # m = sigmoid ( W . Ux1 * Vx2 )
             num_hidden_nodes = depth - layer
             for i in range(num_hidden_nodes):
                 if layer == 0:
@@ -330,11 +327,7 @@ class PredictiveGatingPyramid:
                     tf.matmul(_y,V[layer]) + b_V[layer]), W[layer]) + b_W[layer])
                 M[layer][i] = m
         
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # C O S T  F U N C T I O N
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # TODO: sofar, this part ONLY works for 2-layer networks!
-        
+        # ----
         dim = Dim[0]  # the dimension of the input image
         _x = tf.squeeze(tf.slice(x, [0, input_nbr-2, 0], [-1, 1, -1]))
         m1 = M[-2][-1]
@@ -352,6 +345,84 @@ class PredictiveGatingPyramid:
         # ---
         oz = tf.matmul(tf.multiply(U1_x, W1_T_m_hat), 
                       tf.transpose(V[-2]))
+        return oz
+    
+    
+    def train(self, X, epochs=100, pre_epochs=100, print_debug=True,
+             load_layers=None,
+             load_stages=True, 
+             learningRate=0.0001, save_results=True):
+        """ trains the model
+        
+            X: training data: must be organized as follows:
+                Number_of_videos, video_length, H, W
+            epochs: number of epochs to run for final training
+            pre_epochs: number of epochs for training initial layer
+            load_first_stage: if True, then the first stage will not
+                be trained separatly but will be loaded from file
+                instead
+        """
+        self.is_trained = True
+        depth = self.depth
+        
+        if load_layers is None:
+            load_layers = [load_stages] * depth
+        else:
+            assert len(load_layers) == depth, \
+                "loading layers count must equal depth of pyramid"
+        
+        X = X.astype('float32')  # hopefully we don't run OOMem here..
+        
+        if self.normalize_data:
+            self.data_mean = X.mean(0)[None, :]
+            self.data_std = X.std(0)[None, :] + X.std() * 0.1
+            X -= X.mean(0)[None, :]
+            X /= X.std(0)[None, :] + X.std() * 0.1
+
+        input_nbr = depth + 2
+        splitter = ImageSplitter(X, n=input_nbr)
+
+        F = self.F
+        H = self.H
+        lr = learningRate
+        dim = splitter.get_dimension()
+        numpy_rng = np.random.RandomState(1)
+        
+        self.data_dimension = dim
+        
+        x = tf.placeholder(tf.float32, [None, input_nbr, dim])
+        
+        # ----
+        Dim = [dim]
+        for i in range(1, depth):
+            Dim.append(H[i-1])
+        
+        U = [None] * depth
+        V = [None] * depth
+        W = [None] * depth
+        b_U = [None] * depth
+        b_V = [None] * depth
+        b_W = [None] * depth
+        M = []
+        for layer in range(1, depth + 1):
+            elems_per_layer = depth - layer + 1
+            M.append([None] * elems_per_layer)
+        assert len(M[-1]) == 1, \
+            'the last layer of the pyramid most contain only 1 element'
+        
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # B U I L D  L A Y E R S
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        oz = self.build_network(x, U, V, W, b_U, b_V, b_W, M, Dim,
+                           print_debug, load_layers, depth)
+        
+        
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # C O S T  F U N C T I O N
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # TODO: sofar, this part ONLY works for 2-layer networks!
+        
+
         
         z = tf.squeeze(tf.slice(x, [0, input_nbr-1, 0], [-1, 1, -1]))
         
@@ -373,15 +444,17 @@ class PredictiveGatingPyramid:
             
             for epoch in range(epochs):
                 
+                start_time = time()
                 while splitter.is_same_batch_run():
                     batch = splitter.next_batch(ngram=4)
                     sess.run(optimizer, feed_dict={x: batch})
                 
+                end_time = time()
                 cost_ = sess.run(cost, feed_dict={x: test_set}) / n
                 cost_history.append(cost_)
                 if print_debug:
-                    print ("Training: Epoch: %03d/%03d cost: %.9f" %\
-                               (epoch,epochs ,cost_) )
+                    print ("Training: Epoch: %03d/%03d cost: %.9f time: %.2f" %\
+                               (epoch+1,epochs ,cost_, end_time - start_time) )
             
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             # store weights as numpy arrays into object
@@ -393,6 +466,7 @@ class PredictiveGatingPyramid:
                 self.b_U_np[layer] = np.array(b_U[layer].eval(sess))
                 self.b_V_np[layer] = np.array(b_V[layer].eval(sess))
                 self.b_W_np[layer] = np.array(b_W[layer].eval(sess))
+            self.is_trained = True
         
         if save_results:
             for layer in range(0, depth):
