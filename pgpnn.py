@@ -51,7 +51,7 @@ class ImageSplitter:
         
         F, N, H, W = dataset.shape # Frames, Numbers, Height, Width
         
-        
+        self.frames_per_video = N
         self.vector_dimension = H * W
         self.same_batch_run = True
         
@@ -59,6 +59,21 @@ class ImageSplitter:
         """ gets the data dimension
         """
         return self.vector_dimension
+   
+    def get_batch_size(self, ngram=None):
+        """ calculates the true batchsize
+        """
+        if ngram is None:
+            n = self.n
+        else:
+            n = ngram
+        
+        M = self.frames_per_video
+        seqs = M - n + 1
+        bs = self.batchsize
+        return seqs * bs
+        
+        
 
     def transform_to_n_gram(self, batch, ngram=None):
         """ transforms the batch into an n-gram (parameter n)
@@ -130,17 +145,17 @@ class PredictiveGatingPyramid:
     
     def __init__(self, 
                  depth=2, 
-                 numfilters=[512, 512], 
-                 numHidden=[256, 256],
+                 numFilters=[512, 512], 
+                 numFactors=[256, 256],
                  modelname=None,
                  normalize_data=True):
         assert depth > 0
         assert depth == 2, "Other depth than 2 not supported"
-        assert len(numfilters) == depth, "Number of filters must equal depth"
-        assert len(numHidden) == depth, "Number of hidden units must equal depth"
+        assert len(numFactors) == depth, "Number of filters must equal depth"
+        assert len(numFilters) == depth, "Number of hidden units must equal depth"
         self.depth = depth
-        self.F = numfilters
-        self.H = numHidden
+        self.F = numFactors
+        self.H = numFilters
         self.is_trained = False
         self.normalize_data = normalize_data
         self.modelname = modelname
@@ -224,6 +239,10 @@ class PredictiveGatingPyramid:
         dim = splitter.get_dimension()
         numpy_rng = np.random.RandomState(1)
         
+        Dim = [dim]
+        for i in range(1, depth):
+            Dim.append(H[i-1])
+        print("DIM", Dim)
         
         U = [None] * depth
         V = [None] * depth
@@ -232,7 +251,21 @@ class PredictiveGatingPyramid:
         b_V = [None] * depth
         b_W = [None] * depth
         
-        m = [None] * int((depth * (depth + 1)) / 2)  # as the pyramid.. 1 + 2 + ...
+        #M = [None] * int((depth * (depth + 1)) / 2)  # as the pyramid.. 1 + 2 + ...
+        M = []
+        for layer in range(1, depth + 1):
+            elems_per_layer = depth - layer + 2
+            M.append([None] * elems_per_layer)
+    
+        # true batchsize is a combination of batchsize (aka: number of videos) and
+        # the ngram (number of frames per training set) and the total number of
+        # frames in the respective video
+        true_batchsize = splitter.get_batch_size()
+        
+        
+        # inputs
+        x = tf.placeholder(tf.float32, [true_batchsize, dim, depth + 2])
+        
         
         for layer in range(0, depth):
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -244,7 +277,9 @@ class PredictiveGatingPyramid:
             weights_are_pre_loaded = False
             if load_layers[layer]:
                 # we want to pre-load the layer
-                weights_are_pre_loaded = self.load_stage(layer) 
+                weights_are_pre_loaded = self.load_stage(layer + 1) 
+            
+            dim = Dim[layer]
             
             if weights_are_pre_loaded:
                 U[layer] = tf.Variable(self.U_np[layer])
@@ -254,7 +289,7 @@ class PredictiveGatingPyramid:
                 b_V[layer] = tf.Variable(self.b_V_np[layer])
                 b_W[layer] = tf.Variable(self.b_W_np[layer])
                 if print_debug:
-                    print("\tpre-loading weights for Layer " + str(layer))
+                    print("\tpre-loading weights for Layer " + str(layer + 1))
             else:
                 # randomly initialize the weights
                 U[layer] = tf.Variable(tf.random_normal(shape=(dim, F[layer])) * 0.01)
@@ -266,18 +301,21 @@ class PredictiveGatingPyramid:
                 b_V[layer] = tf.Variable(np.zeros(F[layer], dtype='float32'))
                 b_W[layer] = tf.Variable(np.zeros(H[layer], dtype='float32'))
                 if print_debug:
-                    print("\tcould not preload weights for Layer " + str(layer))
+                    print("\tcould not preload weights for Layer " + str(layer + 1))
             
             # m = sigmoid ( W . Ux1 * Vx2 )
             num_hidden_nodes = depth - layer + 1
             for i in range(num_hidden_nodes):
-                pass
-                
-                
-        # inputs
-        
-        x = tf.placeholder(tf.float32, [None, dim, layer + 1])
-        
+                if layer == 0:
+                    _x = tf.squeeze(tf.slice(x, [0, 0, i], [-1, dim, 1]))
+                    _y = tf.squeeze(tf.slice(x, [0, 0, i+1], [-1, dim, 1]))
+                else:
+                    _x = M[layer-1][i]
+                    _y =  M[layer-1][i+1]
+                m = tf.sigmoid(tf.matmul(tf.multiply(
+                    tf.matmul(_x ,U[layer]) + b_U[layer],
+                    tf.matmul(_y,V[layer]) + b_V[layer]), W[layer]) + b_W[layer])
+                M[layer][i] = m
         
         with tf.Session() as sess:
             init = tf.global_variables_initializer()
