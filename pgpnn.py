@@ -206,7 +206,8 @@ class PredictiveGatingPyramid:
         np.save(modelname + "b_V" + str(stage_level), self.b_V_np[stage_level])
         np.save(modelname + "b_W" + str(stage_level), self.b_W_np[stage_level])
     
-    def predict(self, X, Y, Z, locx=0, locy=1, locz=2, print_debug=True):
+    def predict(self, X, Y, Z, locx=0, locy=1, locz=2, locoz=3, 
+                print_debug=True):
         """ predicts the 4th frame given x,y,yz
         """
         assert self.is_trained, 'network must be trained before prediction'
@@ -227,6 +228,9 @@ class PredictiveGatingPyramid:
         
         h, w = X.shape
         _x = np.array([X,Y,Z,X])  # last x is just a 'dummy'
+        # TODO: fix the ugly hack that we need to dup
+        #    reason: tf.squeeze removes any 1-dim, thus we need to
+        #            have at least 2-dim ...
         _x = np.array([_x.reshape(4, h*w), _x.reshape(4, h*w)])
         
         print("_x", _x.shape)
@@ -265,7 +269,11 @@ class PredictiveGatingPyramid:
             sess.run(init)
             result = sess.run(oz, feed_dict={x: _x})
             
-            return np.array(result)
+            im = np.array(result[0].reshape((h,w)))
+            #if self.normalize_data:
+            #    im += mean[0,locoz]
+            #    im *= std[0,locoz]
+            return im
     
     
     
