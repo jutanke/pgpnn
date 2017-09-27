@@ -148,6 +148,7 @@ class PredictiveGatingPyramid:
                  depth=2, 
                  numFilters=[512, 128], 
                  numFactors=[256, 64],
+                 normalize_weights=True,
                  modelname=None,
                  normalize_data=True):
         assert depth > 0
@@ -157,6 +158,7 @@ class PredictiveGatingPyramid:
         self.depth = depth
         self.F = numFactors
         self.H = numFilters
+        self.normalize_weights = normalize_weights
         self.is_trained = False
         self.normalize_data = normalize_data
         self.modelname = modelname
@@ -262,7 +264,7 @@ class PredictiveGatingPyramid:
         load_layers = [True] * depth
         
         oz = self.build_network(x, U, V, W, b_U, b_V, b_W, M, Dim,
-                           print_debug, load_layers, depth)
+                           print_debug, load_layers, depth, [])
         
         with tf.Session() as sess:
             init = tf.global_variables_initializer()
@@ -278,9 +280,14 @@ class PredictiveGatingPyramid:
     
     
     def build_network(self, x, U, V, W, b_U, b_V, b_W, M, Dim, 
-                      print_debug, load_layers, depth):
+                      print_debug, load_layers, depth, norm):
         """ build the whole network
         """
+        assert len(norm) == 0
+        F = self.F
+        H = self.H
+        lr = self.learningRate
+        numpy_rng = np.random.RandomState(1)
         input_nbr = depth + 2
         for layer in range(0, depth):
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -321,6 +328,16 @@ class PredictiveGatingPyramid:
                 if print_debug:
                     print("\tcould not preload weights for Layer " +\
                           str(layer + 1))
+            
+            if self.normalize_weights:
+                norm_U = tf.nn.l2_normalize(
+                    U[layer], [0,1], epsilon=1e-12, name=None)
+                norm_V = tf.nn.l2_normalize(
+                    V[layer], [0,1], epsilon=1e-12, name=None)
+                exec_norm_U = U[layer].assign(norm_U)
+                exec_norm_V = V[layer].assign(norm_V)
+                norm.append(exec_norm_U)
+                norm.append(exec_norm_V)
             
             num_hidden_nodes = depth - layer
             for i in range(num_hidden_nodes):
@@ -371,6 +388,7 @@ class PredictiveGatingPyramid:
                 instead
         """
         self.is_trained = True
+        self.learningRate = learningRate
         depth = self.depth
         
         if load_layers is None:
@@ -418,11 +436,13 @@ class PredictiveGatingPyramid:
         assert len(M[-1]) == 1, \
             'the last layer of the pyramid most contain only 1 element'
         
+        Norm = []
+        
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # B U I L D  L A Y E R S
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         oz = self.build_network(x, U, V, W, b_U, b_V, b_W, M, Dim,
-                           print_debug, load_layers, depth)
+                           print_debug, load_layers, depth, Norm)
         
         
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -456,7 +476,11 @@ class PredictiveGatingPyramid:
                 while splitter.is_same_batch_run():
                     batch = splitter.next_batch(ngram=4)
                     sess.run(optimizer, feed_dict={x: batch})
-                
+                    
+                    if self.normalize_weights:
+                        for norm in Norm:
+                            sess.run(norm)
+
                 end_time = time()
                 cost_ = sess.run(cost, feed_dict={x: test_set}) / n
                 cost_history.append(cost_)
