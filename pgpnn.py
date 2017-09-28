@@ -125,6 +125,8 @@ class ImageSplitter:
             set1 = self.train_set[start:N]
             set2 = self.train_set[0:end]
             
+            np.random.shuffle(self.train_set)
+            
             self.batch_loop = end
             return self.transform_to_n_gram(
                 np.concatenate((set1, set2)), ngram=ngram)
@@ -162,6 +164,8 @@ class PredictiveGatingPyramid:
         self.is_trained = False
         self.normalize_data = normalize_data
         self.modelname = modelname
+        self.network_is_loaded = False
+        self.data_dimension = None
         
         self.U_np = [None] * depth
         self.V_np = [None] * depth
@@ -170,13 +174,40 @@ class PredictiveGatingPyramid:
         self.b_V_np = [None] * depth
         self.b_W_np = [None] * depth
         
+    
+    def load_network(self, modelname=None):
+        """ Load all layers for this network
+        """
+        if modelname is None:
+            modelname = self.modelname
+        assert modelname is not None
+        
+        result = True
+        for stage in range(self.depth):
+            result = result and self.load_stage(stage, modelname)
+        assert result, "Could not load network"
+        
+        if self.data_dimension is None:
+            self.data_dimension = self.U_np[0].shape[0]
+            
+        try:
+            self.data_mean = np.load(modelname + "_x_mean.npy")
+            self.data_std = np.load(modelname + "_x_std.npy")
+        except FileNotFoundError as e:
+            print("looool", e)
+            pass
+        
+        self.network_is_loaded = True
+        self.is_trained = True
+        
 
-    def load_stage(self, stage_level):
+    def load_stage(self, stage_level, modelname=None):
         """ Tries to load the stage from file
         
         returns True if stage was successfully loaded, otherwise: False
         """
-        modelname = self.modelname
+        if modelname is None:
+            modelname = self.modelname
         assert self.modelname is not None
         try:
             self.U_np[stage_level] = np.load(
@@ -195,6 +226,7 @@ class PredictiveGatingPyramid:
         except FileNotFoundError:
             return False
     
+    
     def save_stage(self, stage_level):
         """ Saves the stage to file
         """
@@ -207,6 +239,7 @@ class PredictiveGatingPyramid:
         np.save(modelname + "b_U" + str(stage_level), self.b_U_np[stage_level])
         np.save(modelname + "b_V" + str(stage_level), self.b_V_np[stage_level])
         np.save(modelname + "b_W" + str(stage_level), self.b_W_np[stage_level])
+    
     
     def predict(self, X, Y, Z, locx=0, locy=1, locz=2, locoz=3, 
                 print_debug=True):
@@ -228,22 +261,63 @@ class PredictiveGatingPyramid:
             Z -= mean[0,locz]
             Z /= std[0,locz]
         
-        h, w = X.shape
+        if len(X.shape) == 2:
+            h, w = X.shape
+            num = 2
+        else:
+            assert len(X.shape) == 3
+            num, h, w = X.shape
+                
         _x = np.array([X,Y,Z,X])  # last x is just a 'dummy'
+        
         # TODO: fix the ugly hack that we need to dup
         #    reason: tf.squeeze removes any 1-dim, thus we need to
         #            have at least 2-dim ...
-        _x = np.array([_x.reshape(4, h*w), _x.reshape(4, h*w)])
-        
-        print("_x", _x.shape)
+        if len(X.shape) == 2:
+            _x = np.array([_x.reshape(4, h*w), _x.reshape(4, h*w)])
+        else:
+            _x = np.rollaxis(_x, 1).reshape(num, 4, h*w)
         
         depth = self.depth
         input_nbr = depth + 2
         dim = self.data_dimension
-        F, H = self.F, self.H
-        x = tf.placeholder(tf.float32, [2, input_nbr, dim])
+        
+        x = tf.placeholder(tf.float32, [num, input_nbr, dim])
         
         # ----
+        
+        load_layers = [True] * depth
+        
+        oz = self.build_network(x, 0, dim, print_debug, load_layers, depth, [])
+        
+        with tf.Session() as sess:
+            init = tf.global_variables_initializer()
+            sess.run(init)
+            result = sess.run(oz, feed_dict={x: _x})
+            
+            if len(X.shape) == 2:
+                im = np.array(result[0].reshape((h,w)))
+            else:
+                im = result.reshape((num, h, w))
+            #if self.normalize_data:
+                #im += mean[0,locoz]
+                #im *= std[0,locoz]
+            return im
+    
+    
+    
+    def build_network(
+        self, 
+        x, learningRate, dim, print_debug, load_layers, depth, norm, network=None):
+        """ build the whole network
+        """
+        assert len(norm) == 0
+        F = self.F
+        H = self.H
+        lr = learningRate
+        numpy_rng = np.random.RandomState(1)
+        input_nbr = depth + 2
+        
         Dim = [dim]
         for i in range(1, depth):
             Dim.append(H[i-1])
@@ -261,34 +335,16 @@ class PredictiveGatingPyramid:
         assert len(M[-1]) == 1, \
             'the last layer of the pyramid most contain only 1 element'
         
-        load_layers = [True] * depth
+        if network is not None: 
+            assert len(network) == 0
+            network.append(U)
+            network.append(V)
+            network.append(W)
+            network.append(b_U)
+            network.append(b_V)
+            network.append(b_W)
+            network.append(M)
         
-        oz = self.build_network(x, U, V, W, b_U, b_V, b_W, M, Dim,
-                           print_debug, load_layers, depth, [])
-        
-        with tf.Session() as sess:
-            init = tf.global_variables_initializer()
-            sess.run(init)
-            result = sess.run(oz, feed_dict={x: _x})
-            
-            im = np.array(result[0].reshape((h,w)))
-            #if self.normalize_data:
-            #    im += mean[0,locoz]
-            #    im *= std[0,locoz]
-            return im
-    
-    
-    
-    def build_network(self, x, U, V, W, b_U, b_V, b_W, M, Dim, 
-                      print_debug, load_layers, depth, norm):
-        """ build the whole network
-        """
-        assert len(norm) == 0
-        F = self.F
-        H = self.H
-        lr = self.learningRate
-        numpy_rng = np.random.RandomState(1)
-        input_nbr = depth + 2
         for layer in range(0, depth):
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             # B U I L D  L A Y E R S
@@ -297,7 +353,11 @@ class PredictiveGatingPyramid:
                 print("[CONSTRUCT LAYER " + str(layer + 1) + "]")
             
             weights_are_pre_loaded = False
-            if load_layers[layer]:
+            if self.network_is_loaded:
+                # the weights are already pre-loaded, possibly even from
+                # a different set of weights then "our" model
+                weights_are_pre_loaded = True
+            elif load_layers[layer]:
                 # we want to pre-load the layer
                 weights_are_pre_loaded = self.load_stage(layer) 
             
@@ -373,6 +433,8 @@ class PredictiveGatingPyramid:
         return oz
     
     
+    
+    
     def train(self, X, epochs=100, pre_epochs=100, print_debug=True,
              load_layers=None,
              load_stages=True, 
@@ -388,7 +450,6 @@ class PredictiveGatingPyramid:
                 instead
         """
         self.is_trained = True
-        self.learningRate = learningRate
         depth = self.depth
         
         if load_layers is None:
@@ -404,6 +465,11 @@ class PredictiveGatingPyramid:
             self.data_std = X.std(0)[None, :] + X.std() * 0.1
             X -= X.mean(0)[None, :]
             X /= X.std(0)[None, :] + X.std() * 0.1
+            
+            if save_results:
+                modelname = self.modelname
+                np.save(modelname + "_x_mean", self.data_mean)
+                np.save(modelname + "_x_std", self.data_std)
 
         input_nbr = depth + 2
         splitter = ImageSplitter(X, n=input_nbr)
@@ -417,33 +483,17 @@ class PredictiveGatingPyramid:
         self.data_dimension = dim
         
         x = tf.placeholder(tf.float32, [None, input_nbr, dim])
-        
-        # ----
-        Dim = [dim]
-        for i in range(1, depth):
-            Dim.append(H[i-1])
-        
-        U = [None] * depth
-        V = [None] * depth
-        W = [None] * depth
-        b_U = [None] * depth
-        b_V = [None] * depth
-        b_W = [None] * depth
-        M = []
-        for layer in range(1, depth + 1):
-            elems_per_layer = depth - layer + 1
-            M.append([None] * elems_per_layer)
-        assert len(M[-1]) == 1, \
-            'the last layer of the pyramid most contain only 1 element'
-        
+
         Norm = []
-        
+        Network = []
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # B U I L D  L A Y E R S
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        oz = self.build_network(x, U, V, W, b_U, b_V, b_W, M, Dim,
-                           print_debug, load_layers, depth, Norm)
+        oz = self.build_network(
+            x, learningRate, dim, print_debug, load_layers, depth, Norm, Network)
         
+        U, V, W = Network[0], Network[1], Network[2]
+        b_U, b_V, b_W = Network[3], Network[4], Network[5]
         
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # C O S T  F U N C T I O N
