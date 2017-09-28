@@ -6,7 +6,7 @@ explain .. tbd
 
 Using a pyramid of depth 2 we can predict the next frame given the dynamics of the scene:
 
-![prediction_mmnist](https://user-images.githubusercontent.com/831215/30897429-7e4940c4-a356-11e7-828e-1c55968ced87.png)
+![prediction_mmnist_2](https://user-images.githubusercontent.com/831215/30984602-0ce91894-a48e-11e7-9c4a-1f4fcd1e0518.png)
 
 ## Reference
 
