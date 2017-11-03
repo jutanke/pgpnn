@@ -2,6 +2,10 @@
 [Predictive Gating Pyramid](https://papers.nips.cc/paper/5549-modeling-deep-temporal-dependencies-with-recurrent-grammar-cells)
 explain .. tbd
 
+## Structure
+
+![pgp_diagram](https://user-images.githubusercontent.com/831215/32362587-df2d50ca-c06a-11e7-9150-b5ac18d855f6.png)
+
 ## Predicting a new frame
 
 Using a pyramid of depth 2 we can predict the next frame given the dynamics of the scene:
