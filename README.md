@@ -1,6 +1,5 @@
-# Predictive Gating Pyramid
-[Predictive Gating Pyramid](https://papers.nips.cc/paper/5549-modeling-deep-temporal-dependencies-with-recurrent-grammar-cells)
-explain .. tbd
+# [Predictive Gating Pyramid](https://papers.nips.cc/paper/5549-modeling-deep-temporal-dependencies-with-recurrent-grammar-cells)
+Michalski et. al. [2] show that bi-linear models such as the factored gated autoencoder can be modelled as recurrent networks. The goal is to treat transformations as 'first-class objects' and be able to pass them around to higher layers in the network, e.g. the first layer learns 'velocity' of objects while the second layer learns 'acceleration'.
 
 ## Structure
 
